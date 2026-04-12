@@ -26,23 +26,20 @@ export const chatAPI = {
     }
   },
   //删除历史会话
-  async deleteMessage(type = 'char', chatId  ){
-    try {
-      const url = new URL(`${BASE_URL}/ai/chat/${type}/${chatId}`)
-      const response = await fetch(url, {
-        method: 'DELETE',
-      })
+  async deleteMessage(type = 'chat', chatId) {
+    const url = new URL(`${BASE_URL}/ai/history/${type}/${chatId}`)
+    const response = await fetch(url, {
+      method: 'DELETE',
+    })
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`)
-      }
-
-      return response.json()
-    } catch (error) {
-      console.error('API Error:', error)
-      throw error
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
     }
+
+    // 不解析响应体，直接返回
+    return true
   },
+
 
   // 获取聊天历史列表
   async getChatHistory(type = 'chat') {
