@@ -1,16 +1,43 @@
 <script setup>
-import { RouterLink} from "vue-router";
-import {onMounted, ref} from "vue";
+import { RouterLink } from "vue-router";
+import { onMounted, ref, nextTick } from "vue";
 import { chatAPI } from '../services/api.js'
 import { useChatStore } from '../stores/counter'
-import {useDark} from  "@vueuse/core"
+import { useDark } from "@vueuse/core"
+
 const isDark = useDark()
 const chatStore = useChatStore()
 const isCollapsed = ref(false)
-//删除历史会话
-const deletemessage = async (chatId)=>{
-  await chatAPI.deleteMessage('chat',chatId)
+const chatHistory = ref([])
+const animatingId = ref(null) // 记录正在播放打字动画的对话 ID
+
+// 删除历史会话
+const handleDelete = async (chatId) => {
+  try {
+    // 调用 API 删除
+    await chatAPI.deleteMessage('chat', chatId)
+
+    // 从本地列表中移除
+    const index = chatHistory.value.findIndex(c => c.id === chatId)
+    if (index !== -1) {
+      chatHistory.value.splice(index, 1)
+    }
+
+    // 如果删除的是当前对话
+    if (chatStore.currentChatId === chatId) {
+      if (chatHistory.value.length > 0) {
+        // 切换到第一个对话
+        await loadChat(chatHistory.value[0].id)
+      } else {
+        // 无历史对话则新建
+        startNewChat()
+      }
+    }
+  } catch (error) {
+    console.error('删除对话失败:', error)
+  }
 }
+
 // 从本地存储读取折叠状态
 const loadCollapseState = () => {
   const savedState = localStorage.getItem('sidebarCollapsed')
@@ -41,7 +68,6 @@ defineExpose({
   expandSidebar,
   isCollapsed
 })
-const chatHistory = ref([])
 
 // 开始新对话
 const startNewChat = () => {
@@ -54,13 +80,26 @@ const startNewChat = () => {
     title: `新对话`
   }
   chatHistory.value = [newChat, ...chatHistory.value]
+
+  // 为新对话添加打字动画
+  nextTick(() => triggerTypewriter(newChatId))
 }
 
-// 加载聊天历史
-const loadChatHistory = async () => {
+// 触发打字动画的方法
+const triggerTypewriter = (chatId) => {
+  animatingId.value = chatId
+}
+
+// 动画结束回调
+const onTypewriterEnd = (e) => {
+  if (e.target.classList.contains('item-title')) {
+    animatingId.value = null
+  }
+}
+// 加载聊天历史1
+const loadChatHistory1 = async () => {
   try {
     const history = await chatAPI.getChatHistory('chat')
-    // 反转数组，让最新的对话显示在最上面
     chatHistory.value = (history || []).reverse()
     if (history && history.length > 0) {
       await loadChat(history[0].id)
@@ -73,10 +112,28 @@ const loadChatHistory = async () => {
     startNewChat()
   }
 }
+// 加载聊天历史2
+const loadChatHistory2 = async () => {
+  try {
+    const history = await chatAPI.getChatHistory('chat')
+    chatHistory.value = (history || []).reverse()
+    if (history && history.length > 0) {
+      await loadChat(history[0].id)
+      // 为第一条（最新）标题添加打字动画
+      nextTick(() => triggerTypewriter(history[0].id))
+    } else {
+      startNewChat()
+    }
+  } catch (error) {
+    console.error('加载聊天历史失败:', error)
+    chatHistory.value = []
+    startNewChat()
+  }
+}
 
 // 监听刷新事件
 const handleRefreshHistory = () => {
-  loadChatHistory()
+  loadChatHistory2()
 }
 
 // 加载特定对话
@@ -93,7 +150,7 @@ const loadChat = async (chatId) => {
 
 onMounted(() => {
   loadCollapseState()
-  loadChatHistory()
+  loadChatHistory1()
   // 监听刷新历史事件
   window.addEventListener('refreshChatHistory', handleRefreshHistory)
 })
@@ -139,14 +196,32 @@ onMounted(() => {
             :key="chat.id"
             class="history-item"
             :class="{
-              'active': chatStore.currentChatId === chat.id,
-              'collapsed': isCollapsed
-            }"
+            'active': chatStore.currentChatId === chat.id,
+            'collapsed': isCollapsed
+          }"
             @click="loadChat(chat.id)"
             :title="isCollapsed ? (chat.title || '新对话') : ''"
         >
           <i class="iconfont icon-liaotianjilu1"></i>
-          <span class="item-title" :class="{ 'hidden': isCollapsed }">{{ chat.title || '新对话' }}</span>
+          <span
+              class="item-title"
+              :class="{
+              'hidden': isCollapsed,
+              'typing': animatingId === chat.id
+            }"
+              @animationend="onTypewriterEnd"
+          >
+            {{ chat.title || '新对话' }}
+          </span>
+          <!-- 删除按钮 - 只在非折叠状态显示 -->
+          <button
+              v-if="!isCollapsed"
+              @click.stop="handleDelete(chat.id)"
+              :title="'删除对话'"
+              class="delete-btn"
+          >
+            <i class="iconfont icon-shanchu"></i>
+          </button>
         </div>
       </div>
     </div>
@@ -348,9 +423,14 @@ onMounted(() => {
     overflow: hidden;
     white-space: nowrap;
     min-height: 40px;
+    position: relative;
 
     &:hover {
       background: rgba(0, 0, 0, 0.05);
+
+      .delete-btn {
+        opacity: 1;
+      }
     }
 
     &.active {
@@ -365,6 +445,7 @@ onMounted(() => {
     &.collapsed {
       padding: 10px;
       justify-content: center;
+
     }
 
     .iconfont {
@@ -372,17 +453,19 @@ onMounted(() => {
       flex-shrink: 0;
       transition: color 0.2s ease;
     }
+
     .item-title {
       margin-left: 12px;
       font-size: 14px;
       overflow: hidden;
       text-overflow: ellipsis;
-      transition: opacity 0.2s ease, width 0.25s ease, margin 0.25s ease;
       opacity: 1;
-      width: auto;
+      flex: 1;
       white-space: nowrap;
       display: inline-block;
-      animation: typewriter 1s steps(20, end) forwards;
+      &.typing {
+        animation: typing 1.5s steps(20, end) forwards;
+      }
 
       &.hidden {
         opacity: 0;
@@ -392,14 +475,40 @@ onMounted(() => {
       }
     }
 
-    @keyframes typewriter {
-      0% {
-        width: 0;
+    .delete-btn {
+      opacity: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 4px;
+      background: transparent;
+      border: none;
+      color: #999;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      flex-shrink: 0;
+      margin-left: 8px;
+
+      &:hover {
+        background: rgba(0, 0, 0, 0.1);
+        color: #ef4444;
       }
-      100% {
-        width: 100%;
+
+      .iconfont {
+        font-size: 14px;
       }
     }
+  }
+}
+// 打字机动画
+@keyframes typing {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
   }
 }
 
@@ -436,6 +545,13 @@ onMounted(() => {
 
     &:hover {
       background: rgba(255, 255, 255, 0.05);
+
+      .delete-btn {
+        &:hover {
+          background: rgba(255, 255, 255, 0.1);
+          color: #f87171;
+        }
+      }
     }
 
     &.active {

@@ -303,7 +303,7 @@ const sendMessage = async () => {
     }
 
     // 如果是首次发送消息，刷新聊天历史以获取生成的标题
-    if (isFirstMessage.value && chatStore.currentChatId) {
+    if (chatStore.currentChatId) {
       // 延迟一下确保后端已生成标题
       setTimeout(async () => {
         // 触发 Sidebar 重新加载历史
