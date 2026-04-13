@@ -19,26 +19,19 @@ export const useChatStore = defineStore('chat', () => {
   function setCurrentChatId(chatId: string | null) {
     currentChatId.value = chatId
   }
-  
-  function clearCurrentChatId() {
-    currentChatId.value = null
-  }
-  
+
   function setMessages(messages: any[]) {
     currentMessages.value = messages
   }
-  
+
   function addMessage(message: any) {
     currentMessages.value.push(message)
   }
-  
+
   function updateLastMessage(content: string) {
     if (currentMessages.value.length > 0) {
-      const lastIndex = currentMessages.value.length - 1
-      currentMessages.value[lastIndex] = {
-        ...currentMessages.value[lastIndex],
-        content
-      }
+      const lastMessage = currentMessages.value[currentMessages.value.length - 1]
+      lastMessage.content = content
     }
   }
   

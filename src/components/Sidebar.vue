@@ -1,6 +1,6 @@
 <script setup>
 import { RouterLink } from "vue-router";
-import { onMounted, ref, nextTick } from "vue";
+import { onMounted, ref, nextTick, watch } from "vue";
 import { chatAPI } from '../services/api.js'
 import { useChatStore } from '../stores/counter'
 import { useDark } from "@vueuse/core"
@@ -9,27 +9,34 @@ const isDark = useDark()
 const chatStore = useChatStore()
 const isCollapsed = ref(false)
 const chatHistory = ref([])
-const animatingId = ref(null) // 记录正在播放打字动画的对话 ID
+const animatingId = ref(null)
+const newnowChatId = ref(null)
+const showToast = ref(false)
+let toastTimer = null
+
+// 显示提示消息
+const showWarningToast = (message = '当前已是新对话，请先发送消息') => {
+  showToast.value = true
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => {
+    showToast.value = false
+  }, 2000)
+}
 
 // 删除历史会话
 const handleDelete = async (chatId) => {
   try {
-    // 调用 API 删除
     await chatAPI.deleteMessage('chat', chatId)
 
-    // 从本地列表中移除
     const index = chatHistory.value.findIndex(c => c.id === chatId)
     if (index !== -1) {
       chatHistory.value.splice(index, 1)
     }
 
-    // 如果删除的是当前对话
     if (chatStore.currentChatId === chatId) {
       if (chatHistory.value.length > 0) {
-        // 切换到第一个对话
         await loadChat(chatHistory.value[0].id)
       } else {
-        // 无历史对话则新建
         startNewChat()
       }
     }
@@ -44,6 +51,46 @@ const loadCollapseState = () => {
   if (savedState !== null) {
     isCollapsed.value = JSON.parse(savedState)
   }
+}
+
+// 检查当前对话是否有消息
+const isCurrentChatEmpty = () => {
+  return chatStore.currentMessages && chatStore.currentMessages.length === 0
+}
+
+// 检查对话是否已保存到后端（有消息的对话才算已保存）
+const isChatReallySaved = (chatId) => {
+  // 如果 chatId 不在历史记录中，说明还没保存
+  const existsInHistory = chatHistory.value.some(chat => chat.id === chatId)
+  if (!existsInHistory) return false
+
+  // 检查这个对话是否有消息
+  return !isCurrentChatEmpty()
+}
+
+// 清理未保存的空对话
+const cleanupEmptyChat = async () => {
+  const currentId = chatStore.currentChatId
+  if (!currentId) return false
+
+  // 检查对话是否有消息
+  const hasMessages = !isCurrentChatEmpty()
+
+  // 如果对话有消息，说明是已保存的对话，不清理
+  if (hasMessages) return false
+
+  // 检查是否在历史记录中
+  const indexInHistory = chatHistory.value.findIndex(chat => chat.id === currentId)
+
+  // 如果在历史记录中但没有消息，从历史记录中移除（这是未保存的空对话）
+  if (indexInHistory !== -1 && !hasMessages) {
+    chatHistory.value.splice(indexInHistory, 1)
+  }
+
+  // 从 store 中清除
+  chatStore.setCurrentChatId(null)
+  chatStore.setMessages([])
+  return true
 }
 
 // 保存折叠状态到本地存储
@@ -70,19 +117,24 @@ defineExpose({
 })
 
 // 开始新对话
-const startNewChat = () => {
+const startNewChat = async () => {
+  // 检查当前对话是否为空（无消息）
+  const isEmpty = isCurrentChatEmpty()
+
+  if (isEmpty && chatStore.currentChatId) {
+    // 如果当前已经是空对话，显示提示并返回
+    console.log('当前已是新对话，无需重复创建')
+    showWarningToast('当前已是新对话，请先发送消息')
+    return
+  }
+
+  // 清理现有的空对话
+  await cleanupEmptyChat()
+
   const newChatId = Date.now().toString()
+  newnowChatId.value = newChatId
   chatStore.setCurrentChatId(newChatId)
   chatStore.setMessages([])
-
-  const newChat = {
-    id: newChatId,
-    title: `新对话`
-  }
-  chatHistory.value = [newChat, ...chatHistory.value]
-
-  // 为新对话添加打字动画
-  nextTick(() => triggerTypewriter(newChatId))
 }
 
 // 触发打字动画的方法
@@ -96,6 +148,7 @@ const onTypewriterEnd = (e) => {
     animatingId.value = null
   }
 }
+
 // 加载聊天历史1
 const loadChatHistory1 = async () => {
   try {
@@ -112,32 +165,33 @@ const loadChatHistory1 = async () => {
     startNewChat()
   }
 }
-// 加载聊天历史2
-const loadChatHistory2 = async () => {
+
+
+// 监听刷新事件
+const handleRefreshHistory = async () => {
   try {
     const history = await chatAPI.getChatHistory('chat')
     chatHistory.value = (history || []).reverse()
-    if (history && history.length > 0) {
-      await loadChat(history[0].id)
-      // 为第一条（最新）标题添加打字动画
-      nextTick(() => triggerTypewriter(history[0].id))
-    } else {
-      startNewChat()
-    }
+    // 不再自动 loadChat(history[0].id)
   } catch (error) {
-    console.error('加载聊天历史失败:', error)
-    chatHistory.value = []
-    startNewChat()
+    console.error('刷新历史列表失败:', error)
   }
 }
-
-// 监听刷新事件
-const handleRefreshHistory = () => {
-  loadChatHistory2()
+// 新增：更新单个对话标题
+const handleUpdateTitle = (event) => {
+  const { chatId, title } = event.detail
+  const chat = chatHistory.value.find(c => c.id === chatId)
+  if (chat) {
+    chat.title = title
+    // 可选：添加打字动画
+    nextTick(() => triggerTypewriter(chatId))
+  }
 }
-
 // 加载特定对话
 const loadChat = async (chatId) => {
+  // 在切换对话前，先清理当前的空对话
+  await cleanupEmptyChat()
+
   chatStore.setCurrentChatId(chatId)
   try {
     const messages = await chatAPI.getChatMessages(chatId, 'chat')
@@ -148,11 +202,26 @@ const loadChat = async (chatId) => {
   }
 }
 
+// 监听消息变化，当首次有消息时添加到本地历史
+watch(() => chatStore.currentMessages, async (newMessages) => {
+  if (newMessages && newMessages.length > 0 && chatStore.currentChatId) {
+    const existsInHistory = chatHistory.value.some(chat => chat.id === chatStore.currentChatId)
+    if (!existsInHistory) {
+      const newChat = {
+        id: chatStore.currentChatId,
+        title: `新对话`
+      }
+      chatHistory.value = [newChat, ...chatHistory.value]
+      nextTick(() => triggerTypewriter(chatStore.currentChatId))
+    }
+  }
+}, { deep: true })
+
 onMounted(() => {
   loadCollapseState()
   loadChatHistory1()
-  // 监听刷新历史事件
   window.addEventListener('refreshChatHistory', handleRefreshHistory)
+  window.addEventListener('updateChatTitle', handleUpdateTitle)
 })
 </script>
 
@@ -161,6 +230,14 @@ onMounted(() => {
     'dark': isDark,
     'collapsed': isCollapsed
   }">
+    <!-- Toast 提示 -->
+    <Transition name="toast-fade">
+      <div v-if="showToast" class="toast-message">
+        <i class="iconfont icon-info"></i>
+        <span>当前已是新对话，请先发送消息</span>
+      </div>
+    </Transition>
+
     <!-- 头部区域 -->
     <div class="sidebar-header">
       <div class="header-content">
@@ -248,6 +325,45 @@ onMounted(() => {
     background: #1a1a1a;
     border-right-color: #2a2a2a;
   }
+}
+
+// Toast 提示样式
+.toast-message {
+  position: fixed;
+  top: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(8px);
+  color: white;
+  padding: 10px 20px;
+  border-radius: 12px;
+  font-size: 14px;
+  z-index: 1000;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+
+  .iconfont {
+    font-size: 18px;
+  }
+}
+
+.toast-fade-enter-active,
+.toast-fade-leave-active {
+  transition: all 0.3s ease;
+}
+
+.toast-fade-enter-from,
+.toast-fade-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-20px);
+}
+
+.dark .toast-message {
+  background: rgba(30, 30, 30, 0.95);
+  color: #e5e5e5;
 }
 
 // 头部区域
@@ -398,7 +514,28 @@ onMounted(() => {
     margin: 0;
   }
 }
+// Toast 提示样式
+.toast-message {
+  position: fixed;
+  top: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(8px);
+  color: white;
+  padding: 10px 20px;
+  border-radius: 12px;
+  font-size: 14px;
+  z-index: 1000;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 
+  .iconfont {
+    font-size: 18px;
+  }
+}
 // 历史列表
 .history-list-wrapper {
   flex: 1;
@@ -502,6 +639,7 @@ onMounted(() => {
     }
   }
 }
+
 // 打字机动画
 @keyframes typing {
   from {

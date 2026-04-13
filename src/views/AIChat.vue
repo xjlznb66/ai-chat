@@ -7,6 +7,7 @@ import {
   DocumentIcon,
   XMarkIcon
 } from '@heroicons/vue/24/outline'
+import WelcomePage from "../components/WelcomePage.vue";
 import ChatMessage from '../components/ChatMessage.vue'
 import Sidebar from "../components/Sidebar.vue";
 import {chatAPI} from '../services/api.js'
@@ -20,7 +21,11 @@ const userInput = ref('')
 const isStreaming = ref(false)
 const fileInput = ref(null)
 const selectedFiles = ref([])
-const chatMainRef = ref(null)
+// 处理欢迎页发送示例问题
+const handleExampleSend = (question) => {
+  userInput.value = question
+  sendMessage()
+}
 // 获取输入区域 DOM 元素
 const inputAreaRef = ref(null)
 
@@ -286,30 +291,37 @@ const sendMessage = async () => {
     let accumulatedContent = ''
 
     while (true) {
-      try {
-        const {value, done} = await reader.read()
-        if (done) break
-
-        accumulatedContent += decoder.decode(value)
-
-        await nextTick(() => {
-          chatStore.updateLastMessage(accumulatedContent)
-        })
-        await scrollToBottom()
-      } catch (readError) {
-        console.error('读取流错误:', readError)
-        break
+      const { value, done } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value);
+      accumulatedContent += chunk;
+      const latestMessages = chatStore.currentMessages;
+      const lastMessage = latestMessages[latestMessages.length - 1];
+      if (lastMessage && lastMessage.role === 'assistant') {
+        lastMessage.content = accumulatedContent;
       }
+      await nextTick();
+      debouncedScrollToBottom();
     }
 
     // 如果是首次发送消息，刷新聊天历史以获取生成的标题
+    // 如果是首次发送消息，尝试获取后端生成的标题
     if (chatStore.currentChatId) {
-      // 延迟一下确保后端已生成标题
+      // 延迟 1.5 秒，确保后端标题已生成
       setTimeout(async () => {
-        // 触发 Sidebar 重新加载历史
-        window.dispatchEvent(new CustomEvent('refreshChatHistory'))
+        try {
+          const history = await chatAPI.getChatHistory('chat')
+          const currentChat = history.find(item => item.id === chatStore.currentChatId)
+          if (currentChat && currentChat.title && currentChat.title !== '新对话') {
+            window.dispatchEvent(new CustomEvent('updateChatTitle', {
+              detail: { chatId: chatStore.currentChatId, title: currentChat.title }
+            }))
+          }
+        } catch (e) {
+          console.warn('获取标题失败', e)
+        }
         isFirstMessage.value = false
-      }, 1000)
+      }, 1500)
     }
   } catch (error) {
     console.error('发送消息失败:', error)
@@ -369,7 +381,8 @@ onMounted(() => {
     <div class="chat-container">
       <div class="chat-main-wrapper" ref="chatMainWrapperRef" :style="{ paddingBottom: inputAreaHeight + 'px' }">
         <div class="chat-main">
-          <div class="messages">
+          <WelcomePage v-if="currentMessages.length === 0" @send="handleExampleSend" />
+          <div v-else class="messages">
             <ChatMessage
                 v-for="(message, index) in currentMessages"
                 :key="index"
