@@ -172,7 +172,6 @@ const handleRefreshHistory = async () => {
   try {
     const history = await chatAPI.getChatHistory('chat')
     chatHistory.value = (history || []).reverse()
-    // 不再自动 loadChat(history[0].id)
   } catch (error) {
     console.error('刷新历史列表失败:', error)
   }

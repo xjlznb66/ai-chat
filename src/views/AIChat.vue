@@ -305,7 +305,6 @@ const sendMessage = async () => {
     }
 
     // 如果是首次发送消息，刷新聊天历史以获取生成的标题
-    // 如果是首次发送消息，尝试获取后端生成的标题
     if (chatStore.currentChatId) {
       // 延迟 1.5 秒，确保后端标题已生成
       setTimeout(async () => {
