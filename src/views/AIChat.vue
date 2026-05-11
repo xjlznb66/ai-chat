@@ -1,5 +1,6 @@
 <script setup>
 import {ref, computed, onMounted, nextTick, watch} from 'vue'
+import { useRouter } from 'vue-router'
 import { useDark, useToggle, useResizeObserver } from '@vueuse/core'
 import {
   PaperAirplaneIcon,
@@ -10,8 +11,10 @@ import {
 import WelcomePage from "../components/WelcomePage.vue";
 import ChatMessage from '../components/ChatMessage.vue'
 import Sidebar from "../components/Sidebar.vue";
-import {chatAPI} from '../services/api.js'
+import {chatAPI, authAPI} from '../services/api.js'
 import {useChatStore} from '../stores/counter'
+
+const router = useRouter()
 const chatStore = useChatStore()
 const isDark = useDark()
 const toggleDark = useToggle(isDark)
@@ -21,8 +24,24 @@ const userInput = ref('')
 const isStreaming = ref(false)
 const fileInput = ref(null)
 const selectedFiles = ref([])
+const abortController = ref(null)
+const isStreamingStopped = ref(false)
+
+// 检查用户是否已登录
+const checkLoginStatus = () => {
+  const userId = authAPI.getUserId()
+  if (!userId) {
+    console.warn('用户未登录，跳转到登录页面')
+    router.push('/login')
+    return false
+  }
+  return true
+}
+
 // 处理欢迎页发送示例问题
 const handleExampleSend = (question) => {
+  // 发送前检查登录状态
+  if (!checkLoginStatus()) return
   userInput.value = question
   sendMessage()
 }
@@ -243,10 +262,77 @@ const getPlaceholder = () => {
   return '输入消息，可上传图片、音频或视频...'
 }
 
+// 停止流式输出
+const stopStreaming = () => {
+  if (abortController.value) {
+    abortController.value.abort()
+    isStreamingStopped.value = true
+    isStreaming.value = false
+  }
+}
+
+// 错误提示消息
+const showErrorToast = (message) => {
+  const toast = document.createElement('div')
+  toast.style.cssText = `
+    position: fixed;
+    top: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #dc2626;
+    color: white;
+    padding: 12px 24px;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 500;
+    z-index: 1000;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+    animation: slideDown 0.3s ease;
+  `
+  toast.textContent = message
+  document.body.appendChild(toast)
+  
+  setTimeout(() => {
+    toast.style.animation = 'slideUp 0.3s ease'
+    setTimeout(() => toast.remove(), 300)
+  }, 3000)
+}
+
+// 添加动画样式
+const style = document.createElement('style')
+style.textContent = `
+  @keyframes slideDown {
+    from { opacity: 0; transform: translateX(-50%) translateY(-20px); }
+    to { opacity: 1; transform: translateX(-50%) translateY(0); }
+  }
+  @keyframes slideUp {
+    from { opacity: 1; transform: translateX(-50%) translateY(0); }
+    to { opacity: 0; transform: translateX(-50%) translateY(-20px); }
+  }
+`
+document.head.appendChild(style)
+
 // 修改发送消息函数
 const sendMessage = async () => {
   if (isStreaming.value) return
   if (!userInput.value.trim() && !selectedFiles.value.length) return
+
+  // 检查登录状态
+  if (!checkLoginStatus()) {
+    showErrorToast('请先登录')
+    return
+  }
+
+  // 检查是否有 chatId
+  if (!chatStore.currentChatId) {
+    console.error('没有会话ID，无法发送消息')
+    showErrorToast('无法发送消息，请先创建新对话')
+    return
+  }
+
+  // 重置中断状态
+  isStreamingStopped.value = false
+  abortController.value = new AbortController()
 
   const messageContent = userInput.value.trim()
 
@@ -286,13 +372,23 @@ const sendMessage = async () => {
   isStreaming.value = true
 
   try {
-    const reader = await chatAPI.sendMessage(formData, chatStore.currentChatId)
+    console.log(`发送消息到后端: chatId=${chatStore.currentChatId}, prompt=${messageContent.substring(0, 50)}...`)
+    const reader = await chatAPI.sendMessage(formData, chatStore.currentChatId, abortController.value.signal)
     const decoder = new TextDecoder('utf-8')
     let accumulatedContent = ''
 
     while (true) {
+      // 检查是否被用户中断
+      if (isStreamingStopped.value) {
+        console.log('用户中断了流式响应')
+        break
+      }
+      
       const { value, done } = await reader.read();
-      if (done) break;
+      if (done) {
+        console.log('流式响应结束')
+        break
+      }
       const chunk = decoder.decode(value);
       accumulatedContent += chunk;
       const latestMessages = chatStore.currentMessages;
@@ -306,7 +402,6 @@ const sendMessage = async () => {
 
     // 如果是首次发送消息，刷新聊天历史以获取生成的标题
     if (chatStore.currentChatId) {
-      // 延迟 1.5 秒，确保后端标题已生成
       setTimeout(async () => {
         try {
           const history = await chatAPI.getChatHistory('chat')
@@ -323,10 +418,16 @@ const sendMessage = async () => {
       }, 1500)
     }
   } catch (error) {
-    console.error('发送消息失败:', error)
-    chatStore.removeLastMessages(2)
+    if (error.name !== 'AbortError') {
+      console.error('发送消息失败:', error)
+      showErrorToast(`发送消息失败: ${error.message}`)
+      // 移除用户消息和助手占位消息
+      chatStore.removeLastMessages(2)
+    }
   } finally {
     isStreaming.value = false
+    isStreamingStopped.value = false
+    abortController.value = null
     selectedFiles.value = []
     if (fileInput.value) {
       fileInput.value.value = ''
@@ -394,7 +495,7 @@ onMounted(() => {
     </div>
 
     <!-- 固定在底部的输入区域 -->
-    <div class="input-area" ref="inputAreaRef">
+    <div v-show="currentMessages.length > 0" class="input-area" ref="inputAreaRef">
       <div class="input-wrapper">
         <div v-if="selectedFiles.length > 0" class="selected-files">
           <div v-for="(file, index) in selectedFiles" :key="index" class="file-item">
@@ -435,17 +536,27 @@ onMounted(() => {
                   class="hidden"
               >
               <button
-                  class="upload-btn"
-                  @click="triggerFileInput"
-                  :disabled="isStreaming"
+                class="upload-btn"
+                @click="triggerFileInput"
+                :disabled="isStreaming"
               >
                 <PaperClipIcon class="icon"/>
               </button>
             </div>
+            <!-- 动态按钮：流式输出时显示停止按钮，否则显示发送按钮 -->
             <button
+                v-if="isStreaming"
+                class="stop-button"
+                @click="stopStreaming"
+                title="停止生成"
+            >
+              <XMarkIcon class="icon"/>
+            </button>
+            <button
+                v-else
                 class="send-button"
                 @click="sendMessage"
-                :disabled="isStreaming || (!userInput.trim() && !selectedFiles.length)"
+                :disabled="!userInput.trim() && !selectedFiles.length"
             >
               <PaperAirplaneIcon class="icon"/>
             </button>
@@ -507,21 +618,21 @@ onMounted(() => {
 }
 
 .messages {
-  padding: 2rem;
+  padding: 0.5rem 2rem;
 }
 
 .input-area {
-  position: fixed;
-  bottom: 0;
-  left: 280px;
-  right: 0;
-  padding: 1rem 2rem;
-  z-index: 100;
-  display: flex;
-  justify-content: center;
-  background: transparent;
+    position: fixed;
+    bottom: 0;
+    left: 290px;
+    right: 35px;
+    z-index: 100;
+    display: flex;
+    justify-content: center;
+    background: transparent;
+    pointer-events: none;
 
-  .input-wrapper {
+    .input-wrapper {
     width: 100%;
     max-width: calc(100% - 380px);
     display: flex;
@@ -604,16 +715,17 @@ onMounted(() => {
   }
 
   .input-row {
-    display: flex;
-    gap: 1rem;
-    align-items: flex-end;
-    padding: 0.75rem;
-    border-radius: 2rem;
-    border: 1px solid rgba(0, 0, 0, 0.1);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
-    background: #dddddd;
-    transition: height 0.1s ease;
-    flex-direction: column;
+      pointer-events: auto;
+      display: flex;
+      gap: 1rem;
+      align-items: flex-end;
+      padding: 0.75rem;
+      border-radius: 2rem;
+      border: 1px solid rgba(0, 0, 0, 0.1);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+      background: #dddddd;
+      transition: height 0.1s ease;
+      flex-direction: column;
 
     .top-box {
       textarea {
@@ -727,6 +839,32 @@ onMounted(() => {
             width: 1.25rem;
             height: 1.25rem;
           }
+        }
+      }
+
+      // 停止按钮样式
+      .stop-button {
+        width: 2.5rem;
+        height: 2.5rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: none;
+        border-radius: 0.75rem;
+        background: #f56565;
+        color: white;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        flex-shrink: 0;
+
+        &:hover {
+          background: #e53e3e;
+          transform: translateY(-1px);
+        }
+
+        .icon {
+          width: 1.25rem;
+          height: 1.25rem;
         }
       }
     }

@@ -9,21 +9,18 @@ const currentRoute = ref(router.currentRoute.value.path)
 
 // 添加全局路由守卫
 router.beforeEach((to, from, next) => {
-  // 如果是从 ChatPDF 页面离开
-  if (from.path === '/chat-pdf') {
-    // 触发一个自定义事件，让 ChatPDF 组件知道要清理资源
-    window.dispatchEvent(new CustomEvent('cleanupChatPDF'))
-  }
   currentRoute.value = to.path
   next()
 })
 </script>
 <template>
-    <router-view v-slot="{ Component }">
-      <transition name="fade" mode="out-in">
-        <component :is="Component" />
-      </transition>
-    </router-view>
+    <div :class="{ 'auth-page-active': currentRoute === '/login' }">
+      <router-view v-slot="{ Component }">
+        <transition name="fade" mode="out-in">
+          <component :is="Component" />
+        </transition>
+      </router-view>
+    </div>
 </template>
 
 <style lang="scss">
@@ -92,6 +89,15 @@ body {
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
+}
+
+/* 登录页面全屏显示 */
+.auth-page-active {
+  body {
+    background: transparent !important;
+  }
+  
+  min-height: 100vh;
 }
 
 @media (max-width: 768px) {

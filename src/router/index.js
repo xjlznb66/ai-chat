@@ -8,6 +8,11 @@ const routes = [
     component: () => import('../views/Home.vue')
   },
   {
+    path: '/login',
+    name: 'Login',
+    component: () => import('../views/AuthPage.vue')
+  },
+  {
     path: '/ai-chat',
     name: 'AIChat',
     component: () => import('../views/AIChat.vue')
@@ -16,16 +21,6 @@ const routes = [
     path: '/comfort-simulator',
     name: 'ComfortSimulator',
     component: () => import('../views/ComfortSimulator.vue')
-  },
-  {
-    path: '/customer-service',
-    name: 'CustomerService',
-    component: () => import('../views/CustomerService.vue')
-  },
-  {
-    path: '/chat-pdf',
-    name: 'ChatPDF',
-    component: () => import('../views/ChatPDF.vue')
   },
   {
     path: '/game',
@@ -39,4 +34,4 @@ const router = createRouter({
   routes
 })
 
-export default router 
+export default router

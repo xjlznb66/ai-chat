@@ -9,7 +9,13 @@
         <div class="text" ref="contentRef" v-if="isUser">
           {{ message.content }}
         </div>
-        <div class="text markdown-content" ref="contentRef" v-else v-html="processedContent"></div>
+        <div v-else class="text markdown-content" ref="contentRef">
+          <div v-if="isStream" class="streaming-content">
+            <div v-html="processedStreamingContent"></div>
+            <span v-if="showCursor" class="typing-cursor">|</span>
+          </div>
+          <div v-else v-html="processedContent"></div>
+        </div>
       </div>
       <div class="message-footer" v-if="!isUser">
         <button class="copy-button" @click="copyContent" :title="copyButtonTitle">
@@ -28,6 +34,8 @@ import DOMPurify from 'dompurify'
 import { DocumentDuplicateIcon, CheckIcon } from '@heroicons/vue/24/outline'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.css'
+import katex from 'katex'
+import 'katex/dist/katex.min.css'
 
 const contentRef = ref(null)
 const copied = ref(false)
@@ -55,7 +63,7 @@ const processContent = (content) => {
       isInThinkBlock = true
       if (currentBlock) {
         // 将之前的普通内容转换为 HTML
-        result += marked.parse(currentBlock)
+        result += renderMath(marked.parse(currentBlock))
       }
       currentBlock = ''
       i += 6 // 跳过 <think>
@@ -65,7 +73,7 @@ const processContent = (content) => {
     if (content.slice(i, i + 8) === '</think>') {
       isInThinkBlock = false
       // 将 think 块包装在特殊 div 中
-      result += `<div class="think-block">${marked.parse(currentBlock)}</div>`
+      result += `<div class="think-block">${renderMath(marked.parse(currentBlock))}</div>`
       currentBlock = ''
       i += 7 // 跳过 </think>
       continue
@@ -77,16 +85,16 @@ const processContent = (content) => {
   // 处理剩余内容
   if (currentBlock) {
     if (isInThinkBlock) {
-      result += `<div class="think-block">${marked.parse(currentBlock)}</div>`
+      result += `<div class="think-block">${renderMath(marked.parse(currentBlock))}</div>`
     } else {
-      result += marked.parse(currentBlock)
+      result += renderMath(marked.parse(currentBlock))
     }
   }
 
   // 净化处理后的 HTML
   const cleanHtml = DOMPurify.sanitize(result, {
-    ADD_TAGS: ['think', 'code', 'pre', 'span'],
-    ADD_ATTR: ['class', 'language']
+    ADD_TAGS: ['think', 'code', 'pre', 'span', 'math'],
+    ADD_ATTR: ['class', 'language', 'style', 'aria-hidden']
   })
   
   // 在净化后的 HTML 中查找代码块并添加复制按钮
@@ -136,6 +144,12 @@ const processedContent = computed(() => {
   return processContent(props.message.content)
 })
 
+// 流式内容处理
+const processedStreamingContent = computed(() => {
+  if (!props.message.content) return ''
+  return processContent(props.message.content)
+})
+
 // 为代码块添加复制功能
 const setupCodeBlockCopyButtons = () => {
   if (!contentRef.value) return;
@@ -174,6 +188,20 @@ const setupCodeBlockCopyButtons = () => {
   });
 }
 
+const props = defineProps({
+  message: {
+    type: Object,
+    required: true
+  },
+  isStream: {
+    type: Boolean,
+    default: false
+  }
+})
+const isUser = computed(() => props.message.role === 'user')
+const showCursor = ref(false)
+const cursorInterval = ref(null)
+
 // 在内容更新后手动应用高亮和设置复制按钮
 const highlightCode = async () => {
   await nextTick()
@@ -187,14 +215,60 @@ const highlightCode = async () => {
   }
 }
 
-const props = defineProps({
-  message: {
-    type: Object,
-    required: true
+// 监听流式状态和内容变化
+watch(() => props.isStream, (newVal) => {
+  if (newVal) {
+    startCursorBlink()
+  } else {
+    stopCursorBlink()
   }
 })
 
-const isUser = computed(() => props.message.role === 'user')
+watch(() => props.message.content, () => {
+  if (props.isStream) {
+    highlightCode()
+  }
+})
+
+// 数学公式渲染函数
+const renderMath = (text) => {
+  // 处理行内数学公式 $...$
+  text = text.replace(/\$([^$]+)\$/g, (match, math) => {
+    try {
+      return katex.renderToString(math, { throwOnError: false, displayMode: false })
+    } catch (e) {
+      return match
+    }
+  })
+  
+  // 处理块级数学公式 $$...$$
+  text = text.replace(/\$\$([^$]+)\$\$/g, (match, math) => {
+    try {
+      return katex.renderToString(math, { throwOnError: false, displayMode: true })
+    } catch (e) {
+      return match
+    }
+  })
+  
+  return text
+}
+
+// 闪烁光标效果
+const startCursorBlink = () => {
+  if (cursorInterval.value) clearInterval(cursorInterval.value)
+  showCursor.value = true
+  cursorInterval.value = setInterval(() => {
+    showCursor.value = !showCursor.value
+  }, 500)
+}
+
+const stopCursorBlink = () => {
+  if (cursorInterval.value) {
+    clearInterval(cursorInterval.value)
+    cursorInterval.value = null
+  }
+  showCursor.value = false
+}
 
 // 复制内容到剪贴板
 const copyContent = async () => {
@@ -229,6 +303,14 @@ watch(() => props.message.content, () => {
   }
 })
 
+// 监听流式状态变化
+watch(() => props.isStream, (newVal) => {
+  if (!newVal && !isUser.value) {
+    // 流式输出结束时重新高亮代码
+    highlightCode()
+  }
+})
+
 // 初始化时也执行一次
 onMounted(() => {
   if (!isUser.value) {
@@ -238,10 +320,41 @@ onMounted(() => {
 </script>
 
 <style scoped lang="scss">
+// DeepSeek风格设计系统（纯色版）
+:root {
+  --color-primary: #2563eb;        // DeepSeek蓝色
+  --color-primary-light: #3b82f6;
+  --color-primary-dark: #1d4ed8;
+  --color-success: #10b981;
+  --color-warning: #f59e0b;
+  --color-error: #ef4444;
+  --color-text-primary: #1f2937;
+  --color-text-secondary: #6b7280;
+  --color-text-light: #9ca3af;
+  --color-bg-primary: #ffffff;
+  --color-bg-secondary: #f8fafc;
+  --color-bg-tertiary: #f1f5f9;
+  --color-border: #e2e8f0;
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px 0 rgb(0 0 0 / 0.06);
+  --shadow-lg: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -1px rgb(0 0 0 / 0.06);
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.5rem;
+  --spacing-xs: 0.25rem;
+  --spacing-sm: 0.5rem;
+  --spacing-md: 1rem;
+  --spacing-lg: 1.5rem;
+  --spacing-xl: 2rem;
+}
+
 .message {
   display: flex;
-  margin-bottom: 1.5rem;
-  gap: 1rem;
+  margin-bottom: 12px;
+  gap: 8px;
+  animation: messageSlideIn 0.3s ease-out;
 
   &.message-user {
     flex-direction: row-reverse;
@@ -253,35 +366,46 @@ onMounted(() => {
         position: relative;
         
         .text {
-          background: #f0f7ff; // 浅色背景
-          color: #333;
-          border-radius: 1rem 1rem 0 1rem;
+          background: #f8fafc;
+          color: #1f2937;
+          border-radius: 18px 18px 18px 4px;
+          border: 1px solid #e2e8f0;
+          box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+          font-weight: 400;
         }
         
         .user-copy-button {
           position: absolute;
-          left: -30px;
+          left: -36px;
           top: 50%;
           transform: translateY(-50%);
-          background: transparent;
-          border: none;
-          width: 24px;
-          height: 24px;
+          background: rgba(255, 255, 255, 0.9);
+          border: 1px solid rgba(0, 0, 0, 0.1);
+          width: 28px;
+          height: 28px;
           display: flex;
           align-items: center;
           justify-content: center;
           cursor: pointer;
+          border-radius: 6px;
           opacity: 0;
-          transition: opacity 0.2s;
+          transition: all 0.2s ease;
           
           .copy-icon {
-            width: 16px;
-            height: 16px;
-            color: #666;
+            width: 14px;
+            height: 14px;
+            color: #6b7280;
+            transition: color 0.2s ease;
             
             &.copied {
-              color: #4ade80;
+              color: #10b981;
             }
+          }
+          
+          &:hover {
+            background: white;
+            transform: translateY(-50%) scale(1.05);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
           }
         }
         
@@ -297,26 +421,33 @@ onMounted(() => {
   }
 
   .avatar {
-    width: 40px;
-    height: 40px;
+    width: 32px;
+    height: 32px;
     flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 
     .icon {
       width: 100%;
       height: 100%;
-      color: #666;
+      color: #6b7280;
       padding: 4px;
       border-radius: 8px;
-      transition: all 0.3s ease;
+      transition: all 0.2s ease;
+      background: #f3f4f6;
 
       &.assistant {
-        color: #333;
-        background: #f0f0f0;
+        color: white;
+        background: #2563eb;
 
         &:hover {
-          background: #e0e0e0;
-          transform: scale(1.05);
+          background: #1d4ed8;
         }
+      }
+      
+      &:hover:not(.assistant) {
+        background: #e5e7eb;
       }
     }
   }
@@ -324,7 +455,7 @@ onMounted(() => {
   .content {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: 4px;
     max-width: 80%;
     
     .text-container {
@@ -334,52 +465,62 @@ onMounted(() => {
     .message-footer {
       display: flex;
       align-items: center;
-      margin-top: 0.25rem;
+      margin-top: 4px;
       
       .time {
         font-size: 0.75rem;
-        color: #666;
+        color: #9ca3af;
+        font-weight: 400;
       }
       
       .copy-button {
         display: flex;
         align-items: center;
-        gap: 0.25rem;
-        background: transparent;
-        border: none;
+        gap: 6px;
+        background: rgba(255, 255, 255, 0.9);
+        border: 1px solid rgba(0, 0, 0, 0.1);
         font-size: 0.75rem;
-        color: #666;
-        padding: 0.25rem 0.5rem;
-        border-radius: 4px;
+        color: #6b7280;
+        padding: 6px 12px;
+        border-radius: 16px;
         cursor: pointer;
         margin-right: auto;
-        transition: background-color 0.2s;
+        transition: all 0.2s ease;
+        font-weight: 500;
         
         &:hover {
-          background-color: rgba(0, 0, 0, 0.05);
+          background: white;
+          color: #374151;
+          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
         }
         
         .copy-icon {
           width: 14px;
           height: 14px;
+          transition: color 0.2s ease;
           
           &.copied {
-            color: #4ade80;
+            color: #10b981;
           }
         }
         
         .copy-text {
           font-size: 0.75rem;
+          font-weight: 500;
         }
       }
     }
 
     .text {
-      padding: 1rem;
-      border-radius: 1rem 1rem 1rem 0;
-      line-height: 1.5;
+      padding: 16px 20px;
+      border-radius: 18px 18px 18px 4px;
+      line-height: 1.1;
       white-space: pre-wrap;
-      color: var(--text-color);
+      color: #1f2937;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+      font-weight: 400;
 
       .cursor {
         animation: blink 1s infinite;
@@ -421,10 +562,10 @@ onMounted(() => {
 
       :deep(pre) {
         background: #f6f8fa;
-        padding: 1rem;
-        border-radius: 0.5rem;
+        padding: 0.5rem;
+        border-radius: 0.3rem;
         overflow-x: auto;
-        margin: 0.5rem 0;
+        margin: 0;
         border: 1px solid #e1e4e8;
 
         code {
@@ -521,6 +662,30 @@ onMounted(() => {
       :deep(.hljs-variable) {
         color: #e36209;
       }
+      
+      // 数学公式样式
+      :deep(math) {
+        font-size: 1.1em;
+      }
+      
+      :deep(.katex-display) {
+        overflow-x: auto;
+        overflow-y: hidden;
+        margin: 0.5rem 0;
+      }
+    }
+    
+    // 流式输出样式
+    .streaming-content {
+      position: relative;
+      display: inline-block;
+      
+      .typing-cursor {
+        color: #666;
+        font-weight: bold;
+        animation: blink 1s infinite;
+        margin-left: 2px;
+      }
     }
   }
 }
@@ -548,15 +713,28 @@ onMounted(() => {
   }
 }
 
+@keyframes messageSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .dark {
   .message {
     .avatar .icon {
       &.assistant {
         color: #fff;
-        background: #444;
+        background: #4a5568;
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
 
         &:hover {
-          background: #555;
+          background: #5a6578;
+          transform: scale(1.05);
         }
       }
     }
@@ -564,16 +742,29 @@ onMounted(() => {
     &.message-user {
       .content .text-container {
         .text {
-          background: #1a365d; // 暗色模式下的浅蓝色背景
-          color: #fff;
+          background: #2d3748;
+          color: #e2e8f0;
+          border: 1px solid rgba(255, 255, 255, 0.05);
+          box-shadow: 0 4px 25px rgba(0, 0, 0, 0.3);
         }
         
         .user-copy-button {
+          background: rgba(45, 55, 72, 0.9);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+          
           .copy-icon {
-            color: #999;
+            color: #a0aec0;
             
             &.copied {
-              color: #4ade80;
+              color: #48bb78;
+            }
+          }
+          
+          &:hover {
+            background: #2d3748;
+            .copy-icon {
+              color: #fff;
             }
           }
         }
@@ -583,36 +774,47 @@ onMounted(() => {
     .content {
       .message-footer {
         .time {
-          color: #999;
+          color: #a0aec0;
         }
-        
+
         .copy-button {
-          color: #999;
-          
+          background: rgba(45, 55, 72, 0.9);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          color: #a0aec0;
+          box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+
           &:hover {
-            background-color: rgba(255, 255, 255, 0.1);
+            background: #2d3748;
+            color: #fff;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
           }
         }
       }
 
       .text {
+        background: #2d3748;
+        color: #e2e8f0;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        box-shadow: 0 4px 25px rgba(0, 0, 0, 0.3);
+        line-height: 1.1;
+        
         :deep(.think-block) {
-          background-color: rgba(255, 255, 255, 0.03);
-          border-left-color: #666;
-          color: #999;
+          background-color: rgba(255, 255, 255, 0.05);
+          border-left-color: #4a5568;
+          color: #a0aec0;
 
           &::before {
-            background: #2a2a2a;
-            color: #888;
+            background: #4a5568;
+            color: #cbd5e0;
           }
         }
 
         :deep(pre) {
-          background: #161b22;
-          border-color: #30363d;
+          background: #1a202c;
+          border-color: #2d3748;
 
           code {
-            color: #c9d1d9;
+            color: #e2e8f0;
           }
         }
 
@@ -703,8 +905,17 @@ onMounted(() => {
       }
 
       &.message-user .content .text {
-        background: #0066cc;
-        color: white;
+        background: #2d3748;
+        color: #e2e8f0;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        box-shadow: 0 4px 25px rgba(0, 0, 0, 0.3);
+        
+        // 用户消息不需要代码高亮样式，移除所有:deep选择器
+        :deep(.think-block),
+        :deep(pre),
+        :deep(.hljs) {
+          all: unset;
+        }
       }
     }
   }
@@ -712,7 +923,14 @@ onMounted(() => {
 
 .markdown-content {
   :deep(p) {
-    margin: 0.5rem 0;
+    margin: 0;
+    padding: 0;
+
+    & + :deep(p),
+    & + :deep(ul),
+    & + :deep(ol) {
+      margin-top: 1px;
+    }
 
     &:first-child {
       margin-top: 0;
@@ -725,21 +943,29 @@ onMounted(() => {
 
   :deep(ul),
   :deep(ol) {
-    margin: 0.5rem 0;
+    margin: 0;
 
-    padding-left: 1.5rem;
+    & + :deep(p),
+    & + :deep(ul),
+    & + :deep(ol) {
+      margin-top: 1px;
+    }
   }
 
   :deep(li) {
-    margin: 0.25rem 0;
+    margin: 0;
+    padding: 0;
 
+    & + :deep(li) {
+      margin-top: 0;
+    }
   }
 
   :deep(code) {
     background: rgba(0, 0, 0, 0.05);
-    padding: 0.2em 0.4em;
-    border-radius: 3px;
-    font-size: 0.9em;
+    padding: 0.15em 0.3em;
+    border-radius: 2px;
+    font-size: 0.85em;
     font-family: ui-monospace, monospace;
   }
 
@@ -750,14 +976,14 @@ onMounted(() => {
 
   :deep(table) {
     border-collapse: collapse;
-    margin: 0.5rem 0;
+    margin: 4px 0;
     width: 100%;
   }
 
   :deep(th),
   :deep(td) {
     border: 1px solid #ddd;
-    padding: 0.5rem;
+    padding: 4px 8px;
     text-align: left;
   }
 
@@ -766,7 +992,7 @@ onMounted(() => {
   }
 
   :deep(blockquote) {
-    margin: 0.5rem 0;
+    margin: 4px 0;
     padding-left: 1rem;
     border-left: 4px solid #ddd;
     color: #666;
@@ -774,7 +1000,7 @@ onMounted(() => {
 
   :deep(.code-block-wrapper) {
     position: relative;
-    margin: 1rem 0;
+    margin: 2px 0;
     border-radius: 6px;
     overflow: hidden;
     
@@ -850,17 +1076,17 @@ onMounted(() => {
     :deep(.code-block-wrapper) {
       .code-copy-button {
         background: rgba(255, 255, 255, 0.05);
-        
+
         &:hover {
           background-color: rgba(255, 255, 255, 0.1);
         }
       }
-      
+
       pre {
         background: #0d0d0d;
       }
     }
-    
+
     :deep(code) {
       background: rgba(255, 255, 255, 0.1);
     }
