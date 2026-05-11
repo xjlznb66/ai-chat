@@ -153,7 +153,7 @@ const onTypewriterEnd = (e) => {
 const loadChatHistory1 = async () => {
   try {
     const history = await chatAPI.getChatHistory('chat')
-    chatHistory.value = (history || []).reverse()
+    chatHistory.value = history || []
     if (history && history.length > 0) {
       await loadChat(history[0].id)
     } else {
@@ -171,7 +171,7 @@ const loadChatHistory1 = async () => {
 const handleRefreshHistory = async () => {
   try {
     const history = await chatAPI.getChatHistory('chat')
-    chatHistory.value = (history || []).reverse()
+    chatHistory.value = history || []
   } catch (error) {
     console.error('刷新历史列表失败:', error)
   }
