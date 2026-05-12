@@ -27,6 +27,63 @@ const selectedFiles = ref([])
 const abortController = ref(null)
 const isStreamingStopped = ref(false)
 
+const MODEL_META = {
+  reasoning: {
+    label: '\u590d\u6742\u63a8\u7406',
+    scene: '\u590d\u6742\u63a8\u7406\u3001\u6df1\u5ea6\u5206\u6790'
+  },
+  general: {
+    label: '\u901a\u7528\u5bf9\u8bdd',
+    scene: '\u65e5\u5e38\u5bf9\u8bdd\u3001\u901a\u7528\u95ee\u7b54'
+  },
+  fast: {
+    label: '\u5feb\u901f\u54cd\u5e94',
+    scene: '\u7b80\u5355\u95ee\u7b54\u3001\u5feb\u901f\u54cd\u5e94'
+  }
+}
+
+const DEFAULT_MODELS = {
+  reasoning: 'qwen-max-latest',
+  general: 'qwen-plus',
+  fast: 'qwen-turbo'
+}
+
+const defaultModelMode = 'general'
+const availableModels = ref(DEFAULT_MODELS)
+const modelOptions = computed(() => Object.entries(availableModels.value).map(([key, value]) => ({
+  key,
+  label: MODEL_META[key]?.label || key,
+  model: value,
+  scene: MODEL_META[key]?.scene || ''
+})))
+const savedModelMode = localStorage.getItem('aiChatModelMode')
+const selectedModelMode = ref(DEFAULT_MODELS[savedModelMode] ? savedModelMode : defaultModelMode)
+const currentModelOption = computed(() => modelOptions.value.find(option => option.key === selectedModelMode.value) || modelOptions.value.find(option => option.key === defaultModelMode) || modelOptions.value[0])
+
+const updateSelectedModelMode = (mode) => {
+  if (!availableModels.value[mode] || isStreaming.value) return
+  selectedModelMode.value = mode
+  localStorage.setItem('aiChatModelMode', mode)
+}
+
+const loadAvailableModels = async () => {
+  try {
+    const models = await chatAPI.getModels()
+    if (models && typeof models === 'object') {
+      availableModels.value = {
+        ...DEFAULT_MODELS,
+        ...models
+      }
+
+      if (!availableModels.value[selectedModelMode.value]) {
+        updateSelectedModelMode(defaultModelMode)
+      }
+    }
+  } catch (error) {
+    console.warn('获取模型列表失败，使用默认模型配置', error)
+  }
+}
+
 // 检查用户是否已登录
 const checkLoginStatus = () => {
   const userId = authAPI.getUserId()
@@ -356,6 +413,7 @@ const sendMessage = async () => {
   // 准备发送数据
   const formData = new FormData()
   formData.append('prompt', messageContent || '')
+  formData.append('model', currentModelOption.value?.key || defaultModelMode)
 
   if (selectedFiles.value.length > 0) {
     selectedFiles.value.forEach(file => {
@@ -471,6 +529,7 @@ watch(() => chatStore.currentChatId, () => {
 })
 
 onMounted(() => {
+  loadAvailableModels()
   adjustTextareaHeight()
 })
 </script>
@@ -481,7 +540,14 @@ onMounted(() => {
     <div class="chat-container">
       <div class="chat-main-wrapper" ref="chatMainWrapperRef" :style="{ paddingBottom: inputAreaHeight + 'px' }">
         <div class="chat-main">
-          <WelcomePage v-if="currentMessages.length === 0" @send="handleExampleSend" />
+          <WelcomePage
+            v-if="currentMessages.length === 0"
+            :model-options="modelOptions"
+            :selected-model-mode="selectedModelMode"
+            :disabled="isStreaming"
+            @update:model-mode="updateSelectedModelMode"
+            @send="handleExampleSend"
+          />
           <div v-else class="messages">
             <ChatMessage
                 v-for="(message, index) in currentMessages"
@@ -522,6 +588,20 @@ onMounted(() => {
             ></textarea>
           </div>
           <div class="bottom-box">
+            <div class="model-selector" aria-label="选择模型">
+              <button
+                v-for="option in modelOptions"
+                :key="option.key"
+                type="button"
+                class="model-option"
+                :class="{ active: selectedModelMode === option.key }"
+                :title="`${option.label}: ${option.model}`"
+                :disabled="isStreaming"
+                @click="updateSelectedModelMode(option.key)"
+              >
+                <span class="model-label">{{ option.label }}</span>
+              </button>
+            </div>
             <button @click="handleToggleDark" class="icon-btn" title="切换主题">
               <i v-if="isDark" class="iconfont icon-taiyang"></i>
               <i v-else class="iconfont icon-yueliang"></i>
@@ -757,6 +837,57 @@ onMounted(() => {
       flex-direction: row;
       gap: 0.5rem;
       align-items: center;
+      flex-wrap: wrap;
+
+      .model-selector {
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
+        padding: 0.25rem;
+        border-radius: 0.875rem;
+        background: rgba(255, 255, 255, 0.7);
+        border: 1px solid rgba(0, 0, 0, 0.06);
+      }
+
+      .model-option {
+        min-width: 86px;
+        min-height: 34px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.35rem;
+        padding: 0.35rem 0.6rem;
+        border: none;
+        border-radius: 0.625rem;
+        background: transparent;
+        color: #4b5563;
+        cursor: pointer;
+        font: inherit;
+        transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+
+        &:hover:not(:disabled) {
+          background: rgba(0, 124, 240, 0.08);
+          color: #0f172a;
+        }
+
+        &.active {
+          background: #ffffff;
+          color: #007CF0;
+          box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
+        }
+
+        &:disabled {
+          opacity: 0.65;
+          cursor: not-allowed;
+        }
+      }
+
+      .model-label {
+        font-size: 0.82rem;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+
       .icon-btn {
         display: flex;
         align-items: center;
@@ -897,6 +1028,27 @@ onMounted(() => {
   .input-row {
     background: #1e1e1e;
   }
+
+  .model-selector {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.08);
+  }
+
+  .model-option {
+    color: #d1d5db;
+
+    &:hover:not(:disabled) {
+      background: rgba(0, 124, 240, 0.16);
+      color: #ffffff;
+    }
+
+    &.active {
+      background: #2f3a46;
+      color: #67e8f9;
+      box-shadow: none;
+    }
+  }
+
 }
 
 // 响应式
@@ -916,6 +1068,24 @@ onMounted(() => {
 
   .input-area .input-wrapper {
     max-width: 100%;
+  }
+
+  .input-area .input-row .top-box,
+  .input-area .input-row .top-box textarea {
+    width: 100%;
+  }
+
+  .input-area .input-row .bottom-box {
+    width: 100%;
+  }
+
+  .input-area .input-row .bottom-box .model-selector {
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .input-area .input-row .bottom-box .model-option {
+    flex: 1 0 auto;
   }
 }
 </style>
