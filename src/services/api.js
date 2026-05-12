@@ -100,6 +100,19 @@ export const chatAPI = {
     }
     return headers
   },
+
+  async getModels() {
+    const response = await fetch(`${BASE_URL}/ai/models`, {
+      method: 'GET',
+      mode: 'cors'
+    })
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
+
+    return await response.json()
+  },
   
   async sendMessage(data, chatId, signal) {
     try {
@@ -119,9 +132,13 @@ export const chatAPI = {
         })
       } else {
         const prompt = data instanceof FormData ? data.get('prompt') : ''
+        const model = data instanceof FormData ? data.get('model') : ''
         const body = new URLSearchParams()
         body.append('prompt', prompt || '')
         body.append('chatId', chatId)
+        if (model) {
+          body.append('model', model)
+        }
         
         response = await fetch(url, {
           method: 'POST',
